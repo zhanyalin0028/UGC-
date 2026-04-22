@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>外部创作者 UGC 内容查询</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: { 950: '#0f172a', 800: '#1e293b', 600: '#475569', 500: '#64748b', 400: '#94a3b8' },
+            brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 900: '#1e3a8a' },
+          },
+          boxShadow: {
+            card: '0 4px 6px -1px rgb(15 23 42 / 0.07), 0 2px 4px -2px rgb(15 23 42 / 0.06)',
+            'card-hover': '0 10px 25px -5px rgb(37 99 235 / 0.12), 0 8px 10px -6px rgb(15 23 42 / 0.08)',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    .filter-input:focus { outline: none; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+  <header class="border-b border-slate-200/80 bg-white">
+    <div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-wider text-brand-600">UGC · 创作者中心</p>
+        <h1 class="mt-1 text-2xl font-bold tracking-tight text-ink-950 sm:text-3xl">外部创作者内容查询</h1>
+        <p class="mt-2 max-w-xl text-sm text-ink-600">输入用户 ID，查看投稿内容并支持筛选与排序。数据由本地 JSON 或「创建者」上传文件提供，全过程在浏览器内完成。</p>
+        <button type="button" id="btn-creator-login" class="mt-3 text-xs font-medium text-brand-700 underline-offset-4 hover:underline">
+          创建者登录（上传数据）
+        </button>
+      </div>
+      <!-- 仅创建者可见：上传入口 -->
+      <div id="creator-upload-wrap" class="hidden w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+        <span class="text-xs font-medium text-ink-500">更新全站数据（Excel / CSV）</span>
+        <label class="flex cursor-pointer flex-col gap-2 sm:items-end">
+          <span class="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50">
+            <svg class="mr-2 h-5 w-5 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            选择文件
+          </span>
+          <input id="file-input" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="sr-only" />
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+    <section class="rounded-2xl border border-slate-200 bg-white p-6 shadow-card sm:p-8">
+      <form id="query-form" class="flex flex-col gap-4 sm:flex-row sm:items-end">
+        <div class="flex-1">
+          <label for="user-id" class="mb-2 block text-sm font-medium text-ink-800">用户 ID（user_id）</label>
+          <input
+            id="user-id"
+            type="text"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="例如：1001"
+            class="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-base text-ink-950 placeholder:text-slate-400 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-500/20"
+          />
+        </div>
+        <button
+          type="submit"
+          class="rounded-xl bg-brand-600 px-8 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 active:scale-[0.99]"
+        >
+          查询
+        </button>
+      </form>
+      <p id="upload-hint" class="mt-4 text-xs text-ink-500"></p>
+    </section>
+
+    <div id="creator-bar" class="mt-8 hidden rounded-2xl border border-brand-100 bg-gradient-to-r from-brand-50 to-white p-6 shadow-card">
+      <p class="text-xs font-medium text-brand-700">当前创作者</p>
+      <p class="mt-1 text-xl font-bold text-ink-950">
+        <span class="text-ink-500">用户昵称</span>
+        <span id="nickname-display" class="ml-2 text-ink-950">—</span>
+      </p>
+    </div>
+
+    <div id="filters-wrap" class="mt-8 hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-card">
+      <h2 class="text-sm font-semibold text-ink-800">筛选</h2>
+      <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <div>
+          <label class="mb-1 block text-xs font-medium text-ink-500">发布时间（起）</label>
+          <input type="date" id="filter-date-from" class="filter-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20" />
+        </div>
+        <div>
+          <label class="mb-1 block text-xs font-medium text-ink-500">发布时间（止）</label>
+          <input type="date" id="filter-date-to" class="filter-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20" />
+        </div>
+        <div>
+          <label class="mb-1 block text-xs font-medium text-ink-500">是否上线</label>
+          <select id="filter-online" class="filter-input w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20">
+            <option value="all">全部</option>
+            <option value="online">审核成功上线</option>
+            <option value="offline">未上线</option>
+          </select>
+        </div>
+        <div>
+          <label class="mb-1 block text-xs font-medium text-ink-500">是否优质</label>
+          <select id="filter-quality" class="filter-input w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20">
+            <option value="all">全部</option>
+            <option value="high">高质量</option>
+            <option value="normal">普通</option>
+          </select>
+        </div>
+        <div class="sm:col-span-2 xl:col-span-2">
+          <label class="mb-1 block text-xs font-medium text-ink-500">排序方式</label>
+          <select id="sort-mode" class="filter-input w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20">
+            <option value="time_asc">发布时间：从远到近</option>
+            <option value="download_desc">累计下载：从多到少</option>
+          </select>
+        </div>
+      </div>
+      <div class="mt-5 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          id="btn-filter-query"
+          class="rounded-lg bg-brand-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2"
+        >
+          查询
+        </button>
+        <button type="button" id="btn-reset-filters" class="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-ink-700 shadow-sm transition hover:bg-slate-50">
+          重置筛选
+        </button>
+        <span id="filter-count" class="text-xs text-ink-500"></span>
+      </div>
+      <p class="mt-3 text-xs text-ink-400">修改筛选或排序后，请点击「查询」刷新列表与指标。</p>
+    </div>
+
+    <!-- 数据指标看板（筛选条件应用后的统计） -->
+    <div id="metrics-board" class="mt-8 hidden rounded-2xl border border-brand-100 bg-white p-6 shadow-card">
+      <h2 class="text-sm font-semibold text-ink-800">数据指标看板</h2>
+      <p class="mt-1 text-xs text-ink-500">以下指标基于上方筛选条件，统计当前查询用户的数据。</p>
+      <div class="mt-6 grid gap-4 sm:grid-cols-3">
+        <div class="rounded-xl border border-slate-100 bg-gradient-to-br from-white to-brand-50/60 p-5 shadow-sm">
+          <p class="text-xs font-medium text-ink-500">审核上线总数</p>
+          <p id="metric-online-count" class="mt-2 text-3xl font-bold tabular-nums text-brand-700">0</p>
+          <p class="mt-1 text-[11px] leading-relaxed text-ink-400">筛选范围内，is_ugc_selected 为 TRUE 的稿件数</p>
+        </div>
+        <div class="rounded-xl border border-slate-100 bg-gradient-to-br from-white to-violet-50/50 p-5 shadow-sm">
+          <p class="text-xs font-medium text-ink-500">高质量稿件数量</p>
+          <p id="metric-quality-count" class="mt-2 text-3xl font-bold tabular-nums text-violet-700">0</p>
+          <p class="mt-1 text-[11px] leading-relaxed text-ink-400">筛选范围内，quality_level 为 TRUE 的稿件数</p>
+        </div>
+        <div class="rounded-xl border border-slate-100 bg-gradient-to-br from-white to-emerald-50/50 p-5 shadow-sm">
+          <p class="text-xs font-medium text-ink-500">稿件被下载总次数</p>
+          <p id="metric-download-sum" class="mt-2 text-3xl font-bold tabular-nums text-emerald-700">0</p>
+          <p class="mt-1 text-[11px] leading-relaxed text-ink-400">筛选范围内，download_count 字段求和</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="empty-state" class="mt-10 hidden rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center shadow-inner">
+      <p class="text-lg font-medium text-ink-800">未查询到该创作者信息</p>
+      <p class="mt-2 text-sm text-ink-500">请确认用户 ID 是否正确，或检查数据文件中是否包含该用户。</p>
+    </div>
+
+    <div id="cards-section" class="mt-10 hidden">
+      <h2 class="mb-4 text-lg font-semibold text-ink-950">全部内容</h2>
+      <div id="cards-grid" class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"></div>
+    </div>
+  </main>
+
+  <footer class="border-t border-slate-200 bg-white py-6 text-center text-xs text-ink-500">
+    <p>预览链接规则：<span class="font-mono text-ink-700">https://www.gaoding.com/posts/</span> + 内容 ID</p>
+  </footer>
+
+  <script>
+    (function () {
+      /**
+       * 创建者密钥：部署时请修改为独立强密码，并仅告知数据维护人员。
+       * 也可通过访问地址 ?creator_key=你的密钥 在同一会话内解锁上传（同时写入 sessionStorage）。
+       */
+      var CREATOR_KEY = 'onlyshuiwa123';
+
+      var PREVIEW_BASE = 'https://www.gaoding.com/posts/';
+      var SESSION_FLAG = 'ugc_creator_auth';
+
+      var BUILTIN_DATA = [
+        {
+          user_id: '1001',
+          nickname: '设计师小王',
+          content_id: 'CONT_001',
+          title: '电商主图设计',
+          online_time: '2025-03-20',
+          is_ugc_selected: true,
+          quality_level: true,
+          download_count: 128,
+        },
+        {
+          user_id: '1001',
+          nickname: '设计师小王',
+          content_id: 'CONT_002',
+          title: '节气海报系列',
+          online_time: '2025-04-01',
+          is_ugc_selected: true,
+          quality_level: false,
+          download_count: 56,
+        },
+        {
+          user_id: '1002',
+          nickname: '品牌研习社',
+          content_id: 'CONT_003',
+          title: '企业画册模板',
+          online_time: '2025-02-14',
+          is_ugc_selected: false,
+          quality_level: false,
+          download_count: 12,
+        },
+        {
+          user_id: '1002',
+          nickname: '品牌研习社',
+          content_id: 'CONT_004',
+          title: '短视频封面合集',
+          online_time: '2025-05-10',
+          is_ugc_selected: true,
+          quality_level: true,
+          download_count: 2048,
+        },
+        {
+          user_id: '1003',
+          nickname: 'UI 猫奴',
+          content_id: 'CONT_005',
+          title: '移动端组件库',
+          online_time: '2025-01-05',
+          is_ugc_selected: false,
+          quality_level: true,
+          download_count: 3,
+        },
+        {
+          user_id: '1003',
+          nickname: 'UI 猫奴',
+          content_id: 'CONT_006',
+          title: '运营长图模板',
+          online_time: '2025-06-01',
+          is_ugc_selected: true,
+          quality_level: true,
+          download_count: 512,
+        },
+        {
+          user_id: '1004',
+          nickname: '插画师阿梨',
+          content_id: 'CONT_007',
+          title: '国潮包装插画',
+          online_time: '2025-03-28',
+          is_ugc_selected: true,
+          quality_level: false,
+          download_count: 89,
+        },
+        {
+          user_id: '1005',
+          nickname: '极简办公',
+          content_id: 'CONT_008',
+          title: 'PPT 数据图表包',
+          online_time: '2025-07-15',
+          is_ugc_selected: true,
+          quality_level: true,
+          download_count: 3300,
+        },
+      ];
+
+      var siteData = BUILTIN_DATA.map(normalizeRow);
+      var currentUserId = null;
+      var baseRows = [];
+
+      function normalizeRow(raw) {
+        return {
+          user_id: String(raw.user_id != null ? raw.user_id : '').trim(),
+          nickname: String(raw.nickname != null ? raw.nickname : '').trim() || '—',
+          content_id: String(raw.content_id != null ? raw.content_id : '').trim(),
+          title: String(raw.title != null ? raw.title : '').trim() || '未命名',
+          online_time: normalizeDateStr(raw.online_time),
+          is_ugc_selected: toBool(raw.is_ugc_selected),
+          quality_level: toBool(raw.quality_level),
+          download_count: toInt(raw.download_count),
+        };
+      }
+
+      function toBool(v) {
+        if (typeof v === 'boolean') return v;
+        var s = String(v).trim().toLowerCase();
+        if (s === 'true' || s === '1' || s === 'yes' || s === '是') return true;
+        if (s === 'false' || s === '0' || s === 'no' || s === '否') return false;
+        return !!v;
+      }
+
+      function toInt(v) {
+        var n = parseInt(String(v).replace(/\D/g, '') || '0', 10);
+        return Number.isFinite(n) ? n : 0;
+      }
+
+      function normalizeDateStr(v) {
+        if (v instanceof Date && !isNaN(v)) {
+          return v.toISOString().slice(0, 10);
+        }
+        var s = String(v != null ? v : '').trim();
+        if (!s) return '';
+        var m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+        return m ? m[1] : s.slice(0, 10);
+      }
+
+      function onlineLabel(selected) {
+        return selected ? '审核成功上线' : '未上线';
+      }
+
+      function qualityLabel(high) {
+        return high ? '高质量' : '普通';
+      }
+
+      function previewUrl(contentId) {
+        return PREVIEW_BASE + encodeURIComponent(contentId);
+      }
+
+      function parseRowsFromSheet(workbook) {
+        var first = workbook.SheetNames[0];
+        var sheet = workbook.Sheets[first];
+        var json = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+        return json.map(rowToRecord);
+      }
+
+      function rowToRecord(row) {
+        var keys = Object.keys(row);
+        var lower = {};
+        keys.forEach(function (k) {
+          lower[String(k).trim().toLowerCase()] = row[k];
+        });
+        function pick() {
+          for (var i = 0; i < arguments.length; i++) {
+            var k = arguments[i];
+            if (lower[k] !== undefined && lower[k] !== '') return lower[k];
+          }
+          return '';
+        }
+        return normalizeRow({
+          user_id: pick('user_id', '用户id', 'userid'),
+          nickname: pick('nickname', '用户昵称', '昵称'),
+          content_id: pick('content_id', '内容id', '内容_id'),
+          title: pick('title', '标题', '内容标题'),
+          online_time: pick('online_time', '发布时间', '上线时间'),
+          is_ugc_selected: pick('is_ugc_selected', '是否ugc精选', 'ugc精选'),
+          quality_level: pick('quality_level', '质量标签等级', '质量等级'),
+          download_count: pick('download_count', '内容导出用户数', '下载量', '导出用户数'),
+        });
+      }
+
+      function filterByForm(rows) {
+        var fromEl = document.getElementById('filter-date-from');
+        var toEl = document.getElementById('filter-date-to');
+        var onlineEl = document.getElementById('filter-online');
+        var qualityEl = document.getElementById('filter-quality');
+        var fromD = fromEl.value;
+        var toD = toEl.value;
+        var online = onlineEl.value;
+        var quality = qualityEl.value;
+
+        return rows.filter(function (r) {
+          var t = r.online_time;
+          if (fromD && t && t < fromD) return false;
+          if (toD && t && t > toD) return false;
+          if (online === 'online' && !r.is_ugc_selected) return false;
+          if (online === 'offline' && r.is_ugc_selected) return false;
+          if (quality === 'high' && !r.quality_level) return false;
+          if (quality === 'normal' && r.quality_level) return false;
+          return true;
+        });
+      }
+
+      function sortRows(rows, sortMode) {
+        var out = rows.slice();
+        if (sortMode === 'time_asc') {
+          out.sort(function (a, b) {
+            var ta = a.online_time || '';
+            var tb = b.online_time || '';
+            return ta.localeCompare(tb);
+          });
+        } else if (sortMode === 'download_desc') {
+          out.sort(function (a, b) {
+            return b.download_count - a.download_count;
+          });
+        }
+        return out;
+      }
+
+      function computeMetrics(rows) {
+        var onlineCnt = 0;
+        var qualityCnt = 0;
+        var dlSum = 0;
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          if (r.is_ugc_selected) onlineCnt++;
+          if (r.quality_level) qualityCnt++;
+          dlSum += r.download_count;
+        }
+        return { onlineCnt: onlineCnt, qualityCnt: qualityCnt, dlSum: dlSum };
+      }
+
+      function renderMetrics(rows) {
+        var m = computeMetrics(rows);
+        document.getElementById('metric-online-count').textContent = m.onlineCnt.toLocaleString('zh-CN');
+        document.getElementById('metric-quality-count').textContent = m.qualityCnt.toLocaleString('zh-CN');
+        document.getElementById('metric-download-sum').textContent = m.dlSum.toLocaleString('zh-CN');
+      }
+
+      function renderCards(rows) {
+        var grid = document.getElementById('cards-grid');
+        grid.innerHTML = '';
+        rows.forEach(function (r) {
+          var onlineClass = r.is_ugc_selected ? 'bg-emerald-50 text-emerald-800 ring-emerald-100' : 'bg-slate-100 text-slate-700 ring-slate-200';
+          var qClass = r.quality_level ? 'bg-violet-50 text-violet-800 ring-violet-100' : 'bg-slate-100 text-slate-700 ring-slate-200';
+          var card = document.createElement('button');
+          card.type = 'button';
+          card.className =
+            'group w-full rounded-2xl border border-slate-100 bg-white p-5 text-left shadow-card transition duration-200 hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-card-hover focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2';
+          card.setAttribute('aria-label', '打开预览：' + r.title);
+          card.innerHTML =
+            '<div class="flex items-start justify-between gap-3">' +
+            '<div class="min-w-0 flex-1">' +
+            '<p class="font-mono text-xs text-ink-500">内容 ID · ' +
+            escapeHtml(r.content_id) +
+            '</p>' +
+            '</div>' +
+            '<span class="shrink-0 rounded-full bg-brand-50 px-2 py-1 text-[11px] font-medium text-brand-700 opacity-0 transition group-hover:opacity-100">打开预览</span>' +
+            '</div>' +
+            '<dl class="mt-4 space-y-2 text-sm">' +
+            '<div class="flex justify-between gap-2"><dt class="text-ink-500">内容名称</dt><dd class="max-w-[65%] text-right font-medium text-ink-900">' +
+            escapeHtml(r.title) +
+            '</dd></div>' +
+            '<div class="flex justify-between gap-2"><dt class="text-ink-500">发布时间</dt><dd class="font-medium text-ink-900">' +
+            escapeHtml(r.online_time || '—') +
+            '</dd></div>' +
+            '<div class="flex justify-between gap-2"><dt class="text-ink-500">是否上线</dt><dd><span class="inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ' +
+            onlineClass +
+            '">' +
+            escapeHtml(onlineLabel(r.is_ugc_selected)) +
+            '</span></dd></div>' +
+            '<div class="flex justify-between gap-2"><dt class="text-ink-500">是否优质</dt><dd><span class="inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ' +
+            qClass +
+            '">' +
+            escapeHtml(qualityLabel(r.quality_level)) +
+            '</span></dd></div>' +
+            '<div class="flex justify-between gap-2"><dt class="text-ink-500">累计下载数量</dt><dd class="tabular-nums font-semibold text-ink-950">' +
+            r.download_count.toLocaleString('zh-CN') +
+            '</dd></div>' +
+            '</dl>';
+          card.addEventListener('click', function () {
+            window.open(previewUrl(r.content_id), '_blank', 'noopener,noreferrer');
+          });
+          grid.appendChild(card);
+        });
+        document.getElementById('filter-count').textContent =
+          rows.length > 0 ? '共 ' + rows.length + ' 条内容（当前结果）' : '当前筛选下暂无内容';
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function showState(hasUser) {
+        document.getElementById('empty-state').classList.toggle('hidden', hasUser);
+        document.getElementById('creator-bar').classList.toggle('hidden', !hasUser);
+        document.getElementById('filters-wrap').classList.toggle('hidden', !hasUser);
+        document.getElementById('metrics-board').classList.toggle('hidden', !hasUser);
+        document.getElementById('cards-section').classList.toggle('hidden', !hasUser);
+      }
+
+      function applyFilterQuery() {
+        if (!currentUserId) return;
+        var filtered = filterByForm(baseRows);
+        var sortMode = document.getElementById('sort-mode').value;
+        var sorted = sortRows(filtered, sortMode);
+        renderMetrics(sorted);
+        renderCards(sorted);
+      }
+
+      function runQuery(userIdRaw) {
+        var uid = String(userIdRaw || '').trim();
+        baseRows = siteData.filter(function (r) {
+          return r.user_id === uid;
+        });
+
+        if (baseRows.length === 0) {
+          currentUserId = null;
+          showState(false);
+          return;
+        }
+
+        currentUserId = uid;
+        var nick = baseRows[0].nickname;
+        document.getElementById('nickname-display').textContent = nick;
+        showState(true);
+        applyFilterQuery();
+      }
+
+      function tryUnlockFromUrl() {
+        try {
+          var params = new URLSearchParams(window.location.search);
+          var key = params.get('creator_key');
+          if (key && CREATOR_KEY && key === CREATOR_KEY) {
+            sessionStorage.setItem(SESSION_FLAG, '1');
+          }
+        } catch (e) {}
+      }
+
+      function isCreator() {
+        return sessionStorage.getItem(SESSION_FLAG) === '1';
+      }
+
+      function refreshCreatorUi() {
+        var wrap = document.getElementById('creator-upload-wrap');
+        var loginBtn = document.getElementById('btn-creator-login');
+        if (isCreator()) {
+          wrap.classList.remove('hidden');
+          loginBtn.textContent = '已解锁上传（创建者）';
+          loginBtn.classList.add('text-emerald-700');
+        } else {
+          wrap.classList.add('hidden');
+          loginBtn.textContent = '创建者登录（上传数据）';
+          loginBtn.classList.remove('text-emerald-700');
+        }
+      }
+
+      document.getElementById('query-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        runQuery(document.getElementById('user-id').value);
+      });
+
+      document.getElementById('btn-filter-query').addEventListener('click', function () {
+        applyFilterQuery();
+      });
+
+      document.getElementById('btn-reset-filters').addEventListener('click', function () {
+        document.getElementById('filter-date-from').value = '';
+        document.getElementById('filter-date-to').value = '';
+        document.getElementById('filter-online').value = 'all';
+        document.getElementById('filter-quality').value = 'all';
+        document.getElementById('sort-mode').value = 'time_asc';
+      });
+
+      document.getElementById('btn-creator-login').addEventListener('click', function () {
+        if (isCreator()) {
+          if (confirm('确定退出创建者上传权限？')) {
+            sessionStorage.removeItem(SESSION_FLAG);
+            refreshCreatorUi();
+          }
+          return;
+        }
+        if (!CREATOR_KEY || CREATOR_KEY === 'CHANGE_ME_TO_YOUR_SECRET') {
+          alert('请先在页面脚本中将 CREATOR_KEY 修改为自定义密钥后再使用。');
+          return;
+        }
+        var input = prompt('请输入创建者密钥以解锁数据上传：');
+        if (input === null) return;
+        if (input === CREATOR_KEY) {
+          sessionStorage.setItem(SESSION_FLAG, '1');
+          refreshCreatorUi();
+          document.getElementById('upload-hint').textContent = '上传权限已解锁（仅本会话有效）。';
+        } else {
+          alert('密钥不正确。');
+        }
+      });
+
+      document.getElementById('file-input').addEventListener('change', function (e) {
+        if (!isCreator()) {
+          e.target.value = '';
+          alert('无上传权限。请通过「创建者登录」验证后再试。');
+          return;
+        }
+        var file = e.target.files && e.target.files[0];
+        if (!file) return;
+        var name = file.name.toLowerCase();
+        var hint = document.getElementById('upload-hint');
+        hint.textContent = '正在读取：' + file.name + ' …';
+
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+          try {
+            var data = ev.target.result;
+            var workbook;
+            if (name.endsWith('.csv')) {
+              var text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+              workbook = XLSX.read(text, { type: 'string' });
+            } else {
+              workbook = XLSX.read(data, { type: 'array' });
+            }
+            var rows = parseRowsFromSheet(workbook).filter(function (r) {
+              return r.content_id && r.user_id;
+            });
+            if (rows.length === 0) {
+              hint.textContent = '未能解析出有效数据，请检查表头是否与字段一致。';
+              return;
+            }
+            siteData = rows;
+            hint.textContent =
+              '已载入 ' + rows.length + ' 条记录。若有正在查看的用户，将按新数据刷新。';
+            if (currentUserId !== null) {
+              runQuery(document.getElementById('user-id').value || currentUserId);
+            }
+          } catch (err) {
+            console.error(err);
+            hint.textContent = '解析失败：' + (err && err.message ? err.message : String(err));
+          }
+        };
+        reader.onerror = function () {
+          document.getElementById('upload-hint').textContent = '读取文件失败。';
+        };
+
+        if (name.endsWith('.csv')) {
+          reader.readAsText(file, 'UTF-8');
+        } else {
+          reader.readAsArrayBuffer(file);
+        }
+        e.target.value = '';
+      });
+
+      tryUnlockFromUrl();
+      refreshCreatorUi();
+
+      document.getElementById('upload-hint').textContent =
+        '内置 ' +
+        siteData.length +
+        ' 条测试数据。上传入口仅对已验证创建者显示；上传将替换全站数据集。筛选条件变更后请在筛选区点击「查询」。';
+    })();
+  </script>
+</body>
+</html>
