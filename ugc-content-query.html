@@ -180,6 +180,10 @@
        */
       var CREATOR_KEY = 'onlyshuiwa123';
 
+      /** 页面打开时自动拉取的远程 CSV（公开只读，所有人共用同一份数据） */
+      var REMOTE_CSV_URL =
+        'https://raw.githubusercontent.com/zhanyalin0028/UGC-/main/0422data.csv';
+
       var PREVIEW_BASE = 'https://www.gaoding.com/posts/';
       var SESSION_FLAG = 'ugc_creator_auth';
 
@@ -302,8 +306,16 @@
         }
         var s = String(v != null ? v : '').trim();
         if (!s) return '';
-        var m = s.match(/^(\d{4}-\d{2}-\d{2})/);
-        return m ? m[1] : s.slice(0, 10);
+        var iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) return iso[1] + '-' + iso[2] + '-' + iso[3];
+        var slash = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+        if (slash) {
+          var y = slash[1];
+          var mo = String(slash[2]).padStart(2, '0');
+          var d = String(slash[3]).padStart(2, '0');
+          return y + '-' + mo + '-' + d;
+        }
+        return s.slice(0, 10);
       }
 
       function onlineLabel(selected) {
@@ -325,6 +337,25 @@
         return json.map(rowToRecord);
       }
 
+      /** 将 CSV / Excel 解析得到的行写入全站数据集，并在已查询用户时刷新视图 */
+      function applyLoadedRows(rows, hintMessage) {
+        siteData = rows;
+        var hintEl = document.getElementById('upload-hint');
+        if (hintMessage) hintEl.textContent = hintMessage;
+        if (currentUserId !== null) {
+          runQuery(document.getElementById('user-id').value || currentUserId);
+        }
+      }
+
+      /** 从文本解析 CSV / TSV，供远程与上传共用 */
+      function parseSpreadsheetText(text) {
+        var workbook = XLSX.read(text, { type: 'string', raw: false });
+        var rows = parseRowsFromSheet(workbook).filter(function (r) {
+          return r.content_id && r.user_id;
+        });
+        return rows;
+      }
+
       function rowToRecord(row) {
         var keys = Object.keys(row);
         var lower = {};
@@ -342,7 +373,7 @@
           user_id: pick('user_id', '用户id', 'userid'),
           nickname: pick('nickname', '用户昵称', '昵称'),
           content_id: pick('content_id', '内容id', '内容_id'),
-          title: pick('title', '标题', '内容标题'),
+          title: pick('title', '标题', '内容标题', '内容名称'),
           online_time: pick('online_time', '发布时间', '上线时间'),
           is_ugc_selected: pick('is_ugc_selected', '是否ugc精选', 'ugc精选'),
           quality_level: pick('quality_level', '质量标签等级', '质量等级'),
@@ -586,26 +617,26 @@
         reader.onload = function (ev) {
           try {
             var data = ev.target.result;
-            var workbook;
+            var rows;
             if (name.endsWith('.csv')) {
               var text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-              workbook = XLSX.read(text, { type: 'string' });
+              rows = parseSpreadsheetText(text);
             } else {
-              workbook = XLSX.read(data, { type: 'array' });
+              var workbook = XLSX.read(data, { type: 'array' });
+              rows = parseRowsFromSheet(workbook).filter(function (r) {
+                return r.content_id && r.user_id;
+              });
             }
-            var rows = parseRowsFromSheet(workbook).filter(function (r) {
-              return r.content_id && r.user_id;
-            });
             if (rows.length === 0) {
               hint.textContent = '未能解析出有效数据，请检查表头是否与字段一致。';
               return;
             }
-            siteData = rows;
-            hint.textContent =
-              '已载入 ' + rows.length + ' 条记录。若有正在查看的用户，将按新数据刷新。';
-            if (currentUserId !== null) {
-              runQuery(document.getElementById('user-id').value || currentUserId);
-            }
+            applyLoadedRows(
+              rows,
+              '已从本地上传载入 ' +
+                rows.length +
+                ' 条记录（覆盖远程/内置数据）。筛选条件变更后请在筛选区点击「查询」。'
+            );
           } catch (err) {
             console.error(err);
             hint.textContent = '解析失败：' + (err && err.message ? err.message : String(err));
@@ -626,10 +657,44 @@
       tryUnlockFromUrl();
       refreshCreatorUi();
 
-      document.getElementById('upload-hint').textContent =
-        '内置 ' +
-        siteData.length +
-        ' 条测试数据。上传入口仅对已验证创建者显示；上传将替换全站数据集。筛选条件变更后请在筛选区点击「查询」。';
+      document.getElementById('upload-hint').textContent = '正在从远程加载数据…';
+
+      function loadRemoteCsv() {
+        var hint = document.getElementById('upload-hint');
+        hint.textContent = '正在从远程加载数据…';
+        fetch(REMOTE_CSV_URL, { cache: 'no-store' })
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.text();
+          })
+          .then(function (text) {
+            var rows = parseSpreadsheetText(text);
+            if (rows.length === 0) {
+              hint.textContent =
+                '远程 CSV 未解析出有效记录（需含 user_id、content_id），已保留内置 ' +
+                BUILTIN_DATA.length +
+                ' 条示例。创建者可上传替换。';
+              return;
+            }
+            applyLoadedRows(
+              rows,
+              '已从远程载入 ' +
+                rows.length +
+                ' 条记录（公开数据源）。创建者可上传覆盖；筛选变更后请在筛选区点击「查询」。'
+            );
+          })
+          .catch(function (err) {
+            console.error(err);
+            hint.textContent =
+              '远程数据加载失败（' +
+              (err && err.message ? err.message : String(err)) +
+              '），已使用内置 ' +
+              BUILTIN_DATA.length +
+              ' 条示例数据。请检查网络或稍后刷新页面。';
+          });
+      }
+
+      loadRemoteCsv();
     })();
   </script>
 </body>
